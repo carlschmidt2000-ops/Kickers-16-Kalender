@@ -576,85 +576,85 @@ def create_ics(team_name, matches):
 
         for match in matches:
 
-        date = match["date"]
-
-        dtstart = date.strftime(
-            "%Y%m%dT%H%M%S"
-        )
-
-        dtend = (
-            date + timedelta(hours=2)
-        ).strftime(
-            "%Y%m%dT%H%M%S"
-        )
-
-        uid = (
-            f"fussball-de-{match['id']}"
-            "@kickers16-kalender"
-        )
-
-        summary = (
-            f"{match['home']} - "
-            f"{match['away']}"
-        )
-
-        description = "Quelle: FUSSBALL.DE"
-
-        if match["competition"]:
-
-            description = (
-                f"Wettbewerb: "
-                f"{match['competition']}\\n"
-                "Quelle: FUSSBALL.DE"
+            date = match["date"]
+    
+            dtstart = date.strftime(
+                "%Y%m%dT%H%M%S"
             )
-
-        lines.extend(
-            [
-                "BEGIN:VEVENT",
-                f"UID:{ical_escape(uid)}",
-                f"DTSTAMP:{now}",
-                (
-                    "DTSTART;TZID=Europe/Berlin:"
-                    f"{dtstart}"
-                ),
-                (
-                    "DTEND;TZID=Europe/Berlin:"
-                    f"{dtend}"
-                ),
-                f"SUMMARY:{ical_escape(summary)}",
-                (
-                    "DESCRIPTION:"
-                    f"{ical_escape(description)}"
-                ),
-            ]
-        )
-
-        if match["venue"]:
-
+    
+            dtend = (
+                date + timedelta(hours=2)
+            ).strftime(
+                "%Y%m%dT%H%M%S"
+            )
+    
+            uid = (
+                f"fussball-de-{match['id']}"
+                "@kickers16-kalender"
+            )
+    
+            summary = (
+                f"{match['home']} - "
+                f"{match['away']}"
+            )
+    
+            description = "Quelle: FUSSBALL.DE"
+    
+            if match["competition"]:
+    
+                description = (
+                    f"Wettbewerb: "
+                    f"{match['competition']}\\n"
+                    "Quelle: FUSSBALL.DE"
+                )
+    
+            lines.extend(
+                [
+                    "BEGIN:VEVENT",
+                    f"UID:{ical_escape(uid)}",
+                    f"DTSTAMP:{now}",
+                    (
+                        "DTSTART;TZID=Europe/Berlin:"
+                        f"{dtstart}"
+                    ),
+                    (
+                        "DTEND;TZID=Europe/Berlin:"
+                        f"{dtend}"
+                    ),
+                    f"SUMMARY:{ical_escape(summary)}",
+                    (
+                        "DESCRIPTION:"
+                        f"{ical_escape(description)}"
+                    ),
+                ]
+            )
+    
+            if match["venue"]:
+    
+                lines.append(
+                    "LOCATION:"
+                    f"{ical_escape(match['venue'])}"
+                )
+    
             lines.append(
-                "LOCATION:"
-                f"{ical_escape(match['venue'])}"
+                "END:VEVENT"
             )
-
+    
         lines.append(
-            "END:VEVENT"
+            "END:VCALENDAR"
         )
-
-    lines.append(
-        "END:VCALENDAR"
-    )
-
-    output = []
-
-    for line in lines:
-        output.extend(
-            fold_line(line)
+    
+        output = []
+    
+        for line in lines:
+            output.extend(
+                fold_line(line)
+            )
+    
+        return (
+            "\r\n".join(output)
+            + "\r\n"
         )
-
-    return (
-        "\r\n".join(output)
-        + "\r\n"
-    )
 
 def main():
 
