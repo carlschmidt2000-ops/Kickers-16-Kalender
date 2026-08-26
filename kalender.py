@@ -479,65 +479,422 @@ def fetch_team(team_id):
             "FUSSBALL.DE hat eine leere Antwort geliefert."
         )
 
-    try:
+    # --------------------------------------------------------
+    # FUSSBALL.DE liefert JSON.
+    # Darin befindet sich der eigentliche Spielplan
+    # im Feld "html".
+    # --------------------------------------------------------
 
+    try:
         data = response.json()
 
     except Exception as error:
 
         print()
-        print(
-            "❌ Antwort ist kein gültiges JSON."
-        )
-
-        print(
-            response.text[:2000]
-        )
+        print("❌ Antwort ist kein gültiges JSON.")
+        print(response.text[:2000])
 
         raise RuntimeError(
-            "FUSSBALL.DE liefert keinen JSON-Spielplan."
+            "FUSSBALL.DE liefert kein gültiges JSON."
         ) from error
 
-    # Debug: oberste Struktur anzeigen
-    if isinstance(data, dict):
-
-        print(
-            "JSON-Schlüssel:",
-            list(data.keys())[:30]
+    if not isinstance(data, dict):
+        raise RuntimeError(
+            "Unerwartete JSON-Struktur von FUSSBALL.DE."
         )
 
-    matches = extract_matches(
-        data,
-        team_id,
+    print(
+        "JSON-Schlüssel:",
+        list(data.keys())
     )
 
-    if not matches:
-
-        print()
-        print(
-            "❌ Keine Spiele im JSON erkannt."
-        )
-
-        print(
-            "JSON-Antwort (erste 3000 Zeichen):"
-        )
-
-        print(
-            json.dumps(
-                data,
-                ensure_ascii=False,
-                indent=2,
-            )[:3000]
-        )
-
+    if not data.get("success"):
         raise RuntimeError(
-            "FUSSBALL.DE liefert JSON, "
-            "aber die Struktur wurde nicht erkannt."
+            "FUSSBALL.DE meldet success=false."
+        )
+
+    html_content = data.get("html")
+
+    if not html_content:
+        raise RuntimeError(
+            "FUSSBALL.DE hat kein HTML im JSON geliefert."
+        )
+
+    print(
+        f"Spielplan-HTML: {len(html_content)} Zeichen"
+    )
+
+    # --------------------------------------------------------
+    # Jetzt das HTML aus dem JSON parsen.
+    # --------------------------------------------------------
+
+    def extract_matches_from_html(content, team_id):
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(
+        content,
+        "html.parser",
+    )
+
+    matches = []
+
+    # --------------------------------------------------------
+    # FUSSBALL.DE:
+    #
+    # row-competition = Zeile mit Datum/Wettbewerb
+    # folgende Zeile = Heim- und Gastmannschaft
+    # --------------------------------------------------------
+
+    rows = soup.select(
+        "div.club-matchplan-table tr.row-competition"
+    )
+
+    print(
+        f"🔎 {len(rows)} Spieltag-Zeilen gefunden."
+    )
+
+    # Fallback, falls sich die äußere DIV-Struktur ändert
+    if not rows:
+
+        rows = soup.select(
+            "tr.row-competition"
+        )
+
+        print(
+            f"🔎 Fallback: {len(rows)} Zeilen gefunden."
+        )
+
+    for row in rows:
+
+        # ----------------------------------------------------
+        # DATUM
+        # ----------------------------------------------------
+
+        date_cell = row.select_one(
+            "td.column-date"
+        )
+
+        if not date_cell:
+
+            # Fallback: irgendeine Zelle mit Datum
+            date_cell = row.find(
+                "td"
+            )
+
+        if not date_cell:
+            continue
+
+        date_text = clean_text(
+            date_cell.get_text(
+                " ",
+                strip=True,
+            )
+        )
+
+        date = None
+
+        # z.B.
+        # 30.08.2026 - 13:00
+        # oder
+        # 30.08.2026 13:00
+
+        match = re.search(
+            r"(\d{2}\.\d{2}\.\d{4})"
+            r"(?:\s*[-–]\s*|\s+)"
+            r"(\d{2}:\d{2})",
+            date_text,
+        )
+
+        if match:
+
+            try:
+
+                date = datetime.strptime(
+                    (
+                        f"{match.group(1)} "
+                        f"{match.group(2)}"
+                    ),
+                    "%d.%m.%Y %H:%M",
+                )
+
+            except ValueError:
+                date = None
+
+        # Nur Datum ohne Uhrzeit
+        if not date:
+
+            match = re.search(
+                r"(\d{2}\.\d{2}\.\d{4})",
+                date_text,
+            )
+
+            if match:
+
+                try:
+
+                    date = datetime.strptime(
+                        match.group(1),
+                        "%d.%m.%Y",
+                    )
+
+                except ValueError:
+                    date = None
+
+        if not date:
+            continue
+
+        # ----------------------------------------------------
+        # NÄCHSTE TABELLENZEILE = MANNSCHAFTEN
+        # ----------------------------------------------------
+
+        team_row = row.find_next_sibling(
+            "tr"
+        )
+
+        if not team_row:
+
+            # Fallback
+            team_row = row.find_next(
+                "tr"
+            )
+
+        if not team_row:
+            continue
+
+        # ----------------------------------------------------
+        # MANNSCHAFTSNAMEN
+        # ----------------------------------------------------
+
+        clubs = team_row.select(
+            "td.colum-club div.club-name"
+        )
+
+        # Alternative Schreibweise
+        if len(clubs) < 2:
+
+            clubs = team_row.select(
+                "td.column-club div.club-name"
+            )
+
+        # Noch allgemeiner
+        if len(clubs) < 2:
+
+            clubs = team_row.select(
+                "div.club-name"
+            )
+
+        # ----------------------------------------------------
+        # Falls die Mannschaften nicht gefunden werden:
+        # suche in der gesamten Zeile nach Links/
+        # Mannschaftselementen.
+        # ----------------------------------------------------
+
+        if len(clubs) < 2:
+
+            possible_names = []
+
+            for element in team_row.find_all(
+                ["div", "span", "a"]
+            ):
+
+                classes = " ".join(
+                    element.get(
+                        "class",
+                        []
+                    )
+                ).lower()
+
+                text = clean_text(
+                    element.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )
+
+                if (
+                    text
+                    and (
+                        "club" in classes
+                        or "team" in classes
+                    )
+                    and text not in possible_names
+                ):
+
+                    possible_names.append(
+                        text
+                    )
+
+            if len(possible_names) >= 2:
+
+                home = possible_names[0]
+                away = possible_names[1]
+
+            else:
+                continue
+
+        else:
+
+            home = clean_text(
+                clubs[0].get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+            away = clean_text(
+                clubs[1].get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+        if not home or not away:
+            continue
+
+        # ----------------------------------------------------
+        # SPIEL-ID
+        # ----------------------------------------------------
+
+        match_id = None
+
+        # Suche Links in der Spielzeile
+        for link in team_row.find_all(
+            "a",
+            href=True,
+        ):
+
+            href = link["href"]
+
+            # Typische FUSSBALL.DE-Spiel-ID
+            numbers = re.findall(
+                r"\d{7,}",
+                href,
+            )
+
+            if numbers:
+
+                match_id = numbers[-1]
+                break
+
+        # Auch in der Wettbewerbzeile suchen
+        if not match_id:
+
+            for link in row.find_all(
+                "a",
+                href=True,
+            ):
+
+                numbers = re.findall(
+                    r"\d{7,}",
+                    link["href"],
+                )
+
+                if numbers:
+
+                    match_id = numbers[-1]
+                    break
+
+        # ----------------------------------------------------
+        # WETTBEWERB
+        # ----------------------------------------------------
+
+        competition = ""
+
+        # Letzte Spalte enthält laut dokumentierter Struktur
+        # Spieltyp und Spielnummer.
+        cells = row.find_all("td")
+
+        if cells:
+
+            last_cell = cells[-1]
+
+            competition = clean_text(
+                last_cell.get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+        # ----------------------------------------------------
+        # SPIELORT
+        # ----------------------------------------------------
+
+        venue = ""
+
+        venue_selectors = [
+            ".club-matchplan-venue",
+            ".column-venue",
+            ".column-location",
+            ".venue",
+            ".location",
+            ".club-matchplan-location",
+        ]
+
+        for selector in venue_selectors:
+
+            venue_element = team_row.select_one(
+                selector
+            )
+
+            if venue_element:
+
+                venue = clean_text(
+                    venue_element.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )
+
+                if venue:
+                    break
+
+        # Auch die Wettbewerbzeile prüfen
+        if not venue:
+
+            for selector in venue_selectors:
+
+                venue_element = row.select_one(
+                    selector
+                )
+
+                if venue_element:
+
+                    venue = clean_text(
+                        venue_element.get_text(
+                            " ",
+                            strip=True,
+                        )
+                    )
+
+                    if venue:
+                        break
+
+        # ----------------------------------------------------
+        # SPIEL SPEICHERN
+        # ----------------------------------------------------
+
+        if not match_id:
+
+            match_id = (
+                f"{date.isoformat()}-"
+                f"{home}-"
+                f"{away}"
+            )
+
+        matches.append(
+            {
+                "id": str(match_id),
+                "date": date,
+                "home": home,
+                "away": away,
+                "venue": venue,
+                "competition": competition,
+                "team_id": team_id,
+            }
         )
 
     return matches
-
-
 # ============================================================
 # KALENDER
 # ============================================================
