@@ -140,130 +140,147 @@ def extract_matches(html_content, team_id):
 
     for row in rows:
 
-        # --------------------------------------------------
-        # Datum
-        # --------------------------------------------------
+        # ==================================================
+        # DATUM
+        # ==================================================
 
         date_cell = row.select_one(
             "td.column-date"
         )
 
         if not date_cell:
-            date_cell = row.find("td")
-
-        if not date_cell:
             continue
 
-        date = parse_date(
+        date_text = clean_text(
             date_cell.get_text(
                 " ",
                 strip=True,
             )
         )
 
+        date = parse_date(date_text)
+
         if not date:
             continue
 
-        # --------------------------------------------------
-        # Mannschaftszeile
-        # --------------------------------------------------
+        # ==================================================
+        # NÄCHSTE ZEILE = EIGENTLICHES SPIEL
+        # ==================================================
 
-        team_row = row.find_next_sibling("tr")
+        game_row = row.find_next_sibling("tr")
 
-        if not team_row:
+        if not game_row:
             continue
 
-        # --------------------------------------------------
-        # Mannschaftsnamen
-        # --------------------------------------------------
+        # ==================================================
+        # MANNSCHAFTEN
+        #
+        # Aktuelle FUSSBALL.DE-Struktur:
+        #
+        # <td class="column-club">
+        #     <a href="...">...</a>
+        # </td>
+        #
+        # ==================================================
 
-        clubs = team_row.select(
-            "div.club-name"
+        club_cells = game_row.select(
+            "td.column-club"
         )
 
-        names = []
+        if len(club_cells) < 2:
+            continue
 
-        for club in clubs:
+        teams_found = []
 
-            name = clean_text(
-                club.get_text(
-                    " ",
-                    strip=True,
-                )
-            )
+        for cell in club_cells:
 
-            if name and name not in names:
-                names.append(name)
+            # Zuerst den Link nehmen
+            link = cell.find("a")
 
-        if len(names) < 2:
-
-            # Fallback: Links mit Mannschaftsnamen
-            for link in team_row.find_all(
-                "a"
-            ):
-
+            if link:
                 name = clean_text(
                     link.get_text(
                         " ",
                         strip=True,
                     )
                 )
+            else:
+                name = clean_text(
+                    cell.get_text(
+                        " ",
+                        strip=True,
+                    )
+                )
 
-                if (
-                    name
-                    and len(name) > 2
-                    and name not in names
-                ):
-                    names.append(name)
+            if name:
+                teams_found.append(name)
 
-        if len(names) < 2:
+        if len(teams_found) < 2:
             continue
 
-        home = names[0]
-        away = names[1]
+        home = teams_found[0]
+        away = teams_found[1]
 
-        # --------------------------------------------------
-        # Spiel-ID
-        # --------------------------------------------------
+        # ==================================================
+        # SPIEL-ID
+        # ==================================================
 
         match_id = None
 
-        for link in team_row.find_all(
-            "a",
-            href=True,
-        ):
+        # Die Match-ID steht typischerweise in einem
+        # Link der Spielzeile oder in der row-competition.
+        for element in [
+            game_row,
+            row,
+        ]:
 
-            numbers = re.findall(
-                r"\d{7,}",
-                link["href"],
-            )
+            for link in element.find_all(
+                "a",
+                href=True,
+            ):
 
-            if numbers:
-                match_id = numbers[-1]
+                href = link["href"]
+
+                numbers = re.findall(
+                    r"\d{7,}",
+                    href,
+                )
+
+                if numbers:
+                    match_id = numbers[-1]
+                    break
+
+            if match_id:
                 break
 
+        # Falls FUSSBALL.DE keine ID liefert:
         if not match_id:
+
             match_id = (
-                f"{date.isoformat()}-"
+                f"{date.strftime('%Y%m%d%H%M')}-"
                 f"{home}-"
                 f"{away}"
             )
 
-        # --------------------------------------------------
-        # Spielort
-        # --------------------------------------------------
+        # ==================================================
+        # SPIELORT
+        # ==================================================
 
         venue = ""
 
-        for selector in [
-            ".club-matchplan-venue",
+        # FUSSBALL.DE kann den Spielort in verschiedenen
+        # Elementen ausgeben. Deshalb mehrere Varianten.
+        venue_selectors = [
             ".column-venue",
             ".column-location",
+            ".club-matchplan-venue",
             ".venue",
             ".location",
-        ]:
+        ]
 
-            element = team_row.select_one(
+        for selector in venue_selectors:
+
+            element = game_row.select_one(
                 selector
             )
 
@@ -279,32 +296,28 @@ def extract_matches(html_content, team_id):
                 if venue:
                     break
 
-        # --------------------------------------------------
-        # Wettbewerb
-        # --------------------------------------------------
+        # ==================================================
+        # WETTBEWERB
+        # ==================================================
 
         competition = ""
 
-        for selector in [
-            ".competition",
-            ".column-competition",
-        ]:
+        competition_cell = row.select_one(
+            "td.column-team"
+        )
 
-            element = row.select_one(
-                selector
+        if competition_cell:
+
+            competition = clean_text(
+                competition_cell.get_text(
+                    " ",
+                    strip=True,
+                )
             )
 
-            if element:
-
-                competition = clean_text(
-                    element.get_text(
-                        " ",
-                        strip=True,
-                    )
-                )
-
-                if competition:
-                    break
+        # ==================================================
+        # SPIEL SPEICHERN
+        # ==================================================
 
         matches.append(
             {
