@@ -88,31 +88,77 @@ def parse_date(text):
     text = clean_text(text)
 
     patterns = [
-        r"(\d{2}\.\d{2}\.\d{4})\s*[-–]\s*(\d{2}:\d{2})",
-        r"(\d{2}\.\d{2}\.\d{4})\s+(\d{2}:\d{2})",
+        # Beispiel:
+        # So, 12.07.26 | 14:00
+        r"(\d{2}\.\d{2}\.\d{2})\s*\|\s*(\d{2}:\d{2})",
+
+        # Beispiel:
+        # 12.07.2026 - 14:00
+        r"(\d{2}\.\d{2}\.\d{4})\s*[-–|]\s*(\d{2}:\d{2})",
+
+        # Beispiel:
+        # Sonntag, 12.07.2026 - 14:00 Uhr
+        r"(\d{2}\.\d{2}\.\d{4}).*?(\d{2}:\d{2})",
+
+        # Nur Datum, falls keine Uhrzeit vorhanden ist
         r"(\d{2}\.\d{2}\.\d{4})",
+
+        # Nur Datum mit zweistelligem Jahr
+        r"(\d{2}\.\d{2}\.\d{2})",
     ]
 
     for pattern in patterns:
-        match = re.search(pattern, text)
+
+        match = re.search(
+            pattern,
+            text,
+        )
 
         if not match:
             continue
 
         try:
-            if len(match.groups()) == 2:
+
+            groups = match.groups()
+
+            date_string = groups[0]
+
+            # ------------------------------------------
+            # Zweistelliges Jahr
+            # ------------------------------------------
+
+            if len(date_string.split(".")[-1]) == 2:
+
+                if len(groups) >= 2:
+
+                    return datetime.strptime(
+                        f"{date_string} {groups[1]}",
+                        "%d.%m.%y %H:%M",
+                    )
+
                 return datetime.strptime(
-                    f"{match.group(1)} {match.group(2)}",
+                    date_string,
+                    "%d.%m.%y",
+                )
+
+            # ------------------------------------------
+            # Vierstelliges Jahr
+            # ------------------------------------------
+
+            if len(groups) >= 2:
+
+                return datetime.strptime(
+                    f"{date_string} {groups[1]}",
                     "%d.%m.%Y %H:%M",
                 )
 
             return datetime.strptime(
-                match.group(1),
+                date_string,
                 "%d.%m.%Y",
             )
 
         except ValueError:
-            pass
+            continue
 
     return None
 
