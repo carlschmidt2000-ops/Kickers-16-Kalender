@@ -672,6 +672,12 @@ def main():
             team["id"]
         )
 
+        matches = [
+            match for match in matches
+            if "spielfrei" not in match["home"].lower()
+            and "spielfrei" not in match["away"].lower()
+        ]
+
         matches = deduplicate(
             matches
         )
