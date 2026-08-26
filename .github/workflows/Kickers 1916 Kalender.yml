@@ -33,7 +33,7 @@ jobs:
         run: |
           python kalender.py
 
-      - name: Prüfen ob Kalender vorhanden sind
+      - name: Kalenderdateien prüfen
         run: |
           test -f erste.ics
           test -f zweite.ics
@@ -44,10 +44,21 @@ jobs:
           echo "zweite.ics:"
           wc -l zweite.ics
 
+      - name: Public-Verzeichnis erstellen
+        run: |
+          rm -rf public
+          mkdir -p public
+
+          cp erste.ics public/erste.ics
+          cp zweite.ics public/zweite.ics
+
+          echo "=== Public ==="
+          ls -la public
+
       - name: GitHub-Pages-Artefakt erstellen
         uses: actions/upload-pages-artifact@v3
         with:
-          path: .
+          path: ./public
 
   deploy:
     needs: build
