@@ -1,0 +1,47 @@
+name: Test Spielplan
+
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Repository herunterladen
+        uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Abhängigkeiten installieren
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Kalender erstellen
+        run: |
+          python kalender.py
+
+      - name: Dateien anzeigen
+        run: |
+          echo "=== Repository ==="
+          ls -la
+          echo ""
+          echo "=== Erste Mannschaft ==="
+          if [ -f erste.ics ]; then
+            wc -l erste.ics
+            head -20 erste.ics
+          else
+            echo "erste.ics wurde NICHT erstellt"
+          fi
+          echo ""
+          echo "=== Zweite Mannschaft ==="
+          if [ -f zweite.ics ]; then
+            wc -l zweite.ics
+            head -20 zweite.ics
+          else
+            echo "zweite.ics wurde NICHT erstellt"
+          fi
