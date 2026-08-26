@@ -1,10 +1,18 @@
-name: Test Spielplan
+name: Kickers 1916 Kalender
 
 on:
   workflow_dispatch:
 
+  schedule:
+    - cron: "0 4 * * *"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
 jobs:
-  test:
+  build:
     runs-on: ubuntu-latest
 
     steps:
@@ -25,23 +33,35 @@ jobs:
         run: |
           python kalender.py
 
-      - name: Dateien anzeigen
+      - name: Prüfen ob Kalender vorhanden sind
         run: |
-          echo "=== Repository ==="
-          ls -la
-          echo ""
-          echo "=== Erste Mannschaft ==="
-          if [ -f erste.ics ]; then
-            wc -l erste.ics
-            head -20 erste.ics
-          else
-            echo "erste.ics wurde NICHT erstellt"
-          fi
-          echo ""
-          echo "=== Zweite Mannschaft ==="
-          if [ -f zweite.ics ]; then
-            wc -l zweite.ics
-            head -20 zweite.ics
-          else
-            echo "zweite.ics wurde NICHT erstellt"
-          fi
+          test -f erste.ics
+          test -f zweite.ics
+
+          echo "erste.ics:"
+          wc -l erste.ics
+
+          echo "zweite.ics:"
+          wc -l zweite.ics
+
+      - name: GitHub-Pages-Artefakt erstellen
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    permissions:
+      pages: write
+      id-token: write
+
+    steps:
+      - name: Kalender veröffentlichen
+        id: deployment
+        uses: actions/deploy-pages@v4
