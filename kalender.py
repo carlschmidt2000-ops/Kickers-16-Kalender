@@ -574,7 +574,7 @@ def create_ics(team_name, matches):
         "X-WR-TIMEZONE:Europe/Berlin",
     ]
 
-        for match in matches:
+    for match in matches:
 
             date = match["date"]
     
