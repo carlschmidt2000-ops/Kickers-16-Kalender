@@ -1,10 +1,10 @@
-import re
 import html
+import re
+import requests
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from pathlib import Path
-
-import requests
-from bs4 import BeautifulSoup
+from zoneinfo import ZoneInfo
 
 
 # ============================================================
@@ -22,7 +22,6 @@ TEAMS = {
     },
 }
 
-# Saison 2026/27
 START_DATE = "2026-07-01"
 END_DATE = "2027-07-31"
 
@@ -39,16 +38,16 @@ BASE_URL = (
     "match-type/-1/"
     "wettkampftyp/-1/"
     "show-venues/true/"
-    "mime-type/HTML/"
+    "mime-type/XML/"
     "team-id/{team_id}"
 )
 
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (compatible; "
-        "Kickers16-Kalender/1.0; "
-        "+https://github.com/carlschmidt2000-ops/kickers16-kalender)"
-    )
+        "Kickers16-Kalender/1.0)"
+    ),
+    "Accept": "application/xml,text/xml,text/html,*/*",
 }
 
 
@@ -56,19 +55,22 @@ HEADERS = {
 # HILFSFUNKTIONEN
 # ============================================================
 
-def clean_text(text):
-    """Entfernt überflüssige Leerzeichen und HTML-Entities."""
-    text = html.unescape(text or "")
-    return " ".join(text.split()).strip()
+def clean_text(value):
+    if value is None:
+        return ""
+
+    value = html.unescape(str(value))
+    value = re.sub(r"\s+", " ", value)
+
+    return value.strip()
 
 
-def ical_escape(text):
-    """Escaping für iCalendar-Text."""
-    if not text:
+def ical_escape(value):
+    if not value:
         return ""
 
     return (
-        str(text)
+        str(value)
         .replace("\\", "\\\\")
         .replace(";", "\\;")
         .replace(",", "\\,")
@@ -80,8 +82,9 @@ def ical_escape(text):
 
 def fold_ical_line(line, limit=75):
     """
-    Faltet lange iCalendar-Zeilen gemäß RFC 5545.
+    RFC-5545-konformes Falten langer iCalendar-Zeilen.
     """
+
     if len(line) <= limit:
         return [line]
 
@@ -96,300 +99,201 @@ def fold_ical_line(line, limit=75):
     return result
 
 
-def extract_date(text):
+def parse_date(value):
     """
-    Versucht ein Datum mit Uhrzeit aus einem Text zu lesen.
-
-    Beispiele:
-    30.08.2026 - 13:00
-    30.08.2026
+    Versucht verschiedene bekannte FUSSBALL.DE-Datumsformate.
     """
 
-    text = clean_text(text)
+    if not value:
+        return None
 
-    match = re.search(
-        r"(\d{2}\.\d{2}\.\d{4})\s*-\s*(\d{2}:\d{2})",
-        text,
-    )
+    value = clean_text(value)
 
-    if match:
-        return datetime.strptime(
-            f"{match.group(1)} {match.group(2)}",
-            "%d.%m.%Y %H:%M",
-        )
+    formats = [
+        "%Y-%m-%dT%H:%M:%S.%fZ",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%d.%m.%Y %H:%M",
+        "%d.%m.%Y",
+    ]
 
-    match = re.search(
-        r"(\d{2}\.\d{2}\.\d{4})",
-        text,
-    )
-
-    if match:
-        return datetime.strptime(
-            match.group(1),
-            "%d.%m.%Y",
-        )
+    for fmt in formats:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            pass
 
     return None
 
 
-def find_match_id(row):
+def find_value(element, possible_names):
     """
-    Sucht die FUSSBALL.DE-Spiel-ID in einer Tabellenzeile.
-    """
-
-    # Zuerst nach Links auf eine Spielseite suchen
-    for link in row.find_all("a", href=True):
-        href = link["href"]
-
-        match = re.search(
-            r"/spiel/[^/]+/[^/]+/-/spiel/(\d+)",
-            href,
-        )
-
-        if match:
-            return match.group(1)
-
-        # Allgemeiner Fallback: letzte längere Zahl aus dem Link
-        numbers = re.findall(r"\d{7,}", href)
-
-        if numbers:
-            return numbers[-1]
-
-    # Fallback: nach data-Attributen suchen
-    for tag in row.find_all(True):
-        for key, value in tag.attrs.items():
-            if isinstance(value, str):
-                match = re.search(
-                    r"(?:match|spiel)[-_]?(?:id)?[=:/-]?(\d{7,})",
-                    value,
-                    re.IGNORECASE,
-                )
-
-                if match:
-                    return match.group(1)
-
-    return None
-
-
-def extract_teams(row):
-    """
-    Versucht Heim- und Gastmannschaft aus einer Spielzeile zu lesen.
+    Sucht einen Wert sowohl als XML-Element als auch als Attribut.
     """
 
-    names = []
+    names_lower = {
+        name.lower()
+        for name in possible_names
+    }
 
-    for element in row.select(".club-name"):
-        name = clean_text(element.get_text(" ", strip=True))
+    # Attribute
+    for key, value in element.attrib.items():
+        if key.lower() in names_lower:
+            return clean_text(value)
 
-        if name and name not in names:
-            names.append(name)
+    # Unterelemente
+    for child in element.iter():
+        tag = child.tag.split("}")[-1].lower()
 
-    if len(names) >= 2:
-        return names[0], names[1]
-
-    # Fallback: alternative Schreibweisen
-    for selector in [
-        ".column-club .club-name",
-        ".colum-club .club-name",
-        ".club-name",
-    ]:
-        names = []
-
-        for element in row.select(selector):
-            name = clean_text(element.get_text(" ", strip=True))
-
-            if name and name not in names:
-                names.append(name)
-
-        if len(names) >= 2:
-            return names[0], names[1]
-
-    return None, None
-
-
-def extract_venue(row):
-    """
-    Versucht den Spielort / die Spielstätte zu finden.
-    """
-
-    selectors = [
-        ".venue",
-        ".club-matchplan-venue",
-        ".column-venue",
-        ".column-location",
-        ".venue-name",
-        ".location",
-    ]
-
-    for selector in selectors:
-        element = row.select_one(selector)
-
-        if element:
-            value = clean_text(element.get_text(" ", strip=True))
-
-            if value:
-                return value
-
-    # Allgemeiner Fallback anhand typischer Klassen
-    for element in row.find_all(True):
-        classes = " ".join(element.get("class", []))
-
-        if any(
-            word in classes.lower()
-            for word in ["venue", "location", "spielort"]
-        ):
-            value = clean_text(element.get_text(" ", strip=True))
-
-            if value:
-                return value
+        if tag in names_lower and child.text:
+            return clean_text(child.text)
 
     return ""
 
 
-def extract_competition(row):
+def extract_matches_from_xml(content, team_id):
     """
-    Ermittelt möglichst den Wettbewerb.
-    """
+    Versucht die XML-Antwort möglichst tolerant auszulesen.
 
-    selectors = [
-        ".column-competition",
-        ".competition",
-        ".club-matchplan-competition",
-    ]
-
-    for selector in selectors:
-        element = row.select_one(selector)
-
-        if element:
-            value = clean_text(element.get_text(" ", strip=True))
-
-            if value:
-                return value
-
-    # Fallback: Text der Zeile
-    text = clean_text(row.get_text(" ", strip=True))
-
-    for keyword in [
-        "Kreisliga",
-        "Kreispokal",
-        "Pokal",
-        "Meisterschaft",
-        "Freundschaft",
-    ]:
-        if keyword.lower() in text.lower():
-            return keyword
-
-    return ""
-
-
-def parse_matches(html_content, team_id):
-    """
-    Liest den Spielplan aus der FUSSBALL.DE-HTML-Antwort.
+    Da FUSSBALL.DE seine XML-Struktur im Laufe der Jahre
+    verändert hat, suchen wir nach Elementen, die wie
+    Spiele/Matches aussehen.
     """
 
-    soup = BeautifulSoup(html_content, "html.parser")
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return []
+
 
     matches = []
 
-    # FUSSBALL.DE gruppiert Spiele über row-competition.
-    rows = soup.select("tr.row-competition")
+    # Alle XML-Elemente durchsuchen
+    for element in root.iter():
 
-    if not rows:
-        # Fallback für mögliche spätere HTML-Änderungen
-        rows = soup.select("tr")
+        tag = element.tag.split("}")[-1].lower()
 
-    for row in rows:
-        text = clean_text(row.get_text(" ", strip=True))
-
-        if not text:
+        if tag not in {
+            "match",
+            "game",
+            "spiel",
+            "matchplanentry",
+            "matchplan",
+        }:
             continue
 
-        # Datum suchen
-        date = extract_date(text)
+        match_id = find_value(
+            element,
+            [
+                "id",
+                "matchid",
+                "match-id",
+                "gameid",
+                "game-id",
+            ],
+        )
+
+        date_value = find_value(
+            element,
+            [
+                "matchmoment",
+                "match-moment",
+                "datetime",
+                "date",
+                "datum",
+                "start",
+                "startdate",
+            ],
+        )
+
+        date = parse_date(date_value)
 
         if not date:
-            # Manche Versionen verteilen Datum und Uhrzeit
-            date_element = row.select_one(".column-date")
+            continue
 
-            if date_element:
-                date = extract_date(
-                    date_element.get_text(" ", strip=True)
+        home = find_value(
+            element,
+            [
+                "homeTeam",
+                "home-team",
+                "hometeam",
+                "home",
+                "heim",
+                "heimteam",
+            ],
+        )
+
+        away = find_value(
+            element,
+            [
+                "awayTeam",
+                "away-team",
+                "awayteam",
+                "away",
+                "gast",
+                "gastteam",
+            ],
+        )
+
+        # Falls home/away als verschachtelte Objekte vorliegen,
+        # Namen darin suchen.
+        if not home or not away:
+
+            team_names = []
+
+            for child in element.iter():
+
+                child_tag = (
+                    child.tag.split("}")[-1].lower()
                 )
 
-        if not date:
-            continue
+                if child_tag in {
+                    "name",
+                    "teamname",
+                    "team-name",
+                } and child.text:
 
-        home, away = extract_teams(row)
+                    name = clean_text(child.text)
 
-        # Bei der alten Struktur können die Mannschaftsnamen
-        # in der folgenden Zeile stehen.
-        if not home or not away:
-            next_row = row.find_next("tr")
+                    if name and name not in team_names:
+                        team_names.append(name)
 
-            if next_row:
-                home2, away2 = extract_teams(next_row)
-
-                if home2 and away2:
-                    home = home2
-                    away = away2
-
-                    combined_text = (
-                        row.get_text(" ", strip=True)
-                        + " "
-                        + next_row.get_text(" ", strip=True)
-                    )
-
-                    match_id = (
-                        find_match_id(row)
-                        or find_match_id(next_row)
-                    )
-
-                    venue = (
-                        extract_venue(row)
-                        or extract_venue(next_row)
-                    )
-
-                    competition = (
-                        extract_competition(row)
-                        or extract_competition(next_row)
-                    )
-
-                    text = clean_text(combined_text)
-
-                else:
-                    match_id = find_match_id(row)
-                    venue = extract_venue(row)
-                    competition = extract_competition(row)
-            else:
-                match_id = find_match_id(row)
-                venue = extract_venue(row)
-                competition = extract_competition(row)
-        else:
-            match_id = find_match_id(row)
-            venue = extract_venue(row)
-            competition = extract_competition(row)
+            if len(team_names) >= 2:
+                home = team_names[0]
+                away = team_names[1]
 
         if not home or not away:
-            print(
-                f"⚠️ Mannschaften konnten nicht erkannt werden: {text}"
-            )
             continue
 
-        # "spielfrei" soll kein Kalendertermin werden
-        if "spielfrei" in home.lower() or "spielfrei" in away.lower():
-            continue
+        venue = find_value(
+            element,
+            [
+                "venue",
+                "location",
+                "stadium",
+                "spielort",
+                "sportstaette",
+            ],
+        )
 
-        # Eine stabile ID ist für Kalender-Updates wichtig.
-        # Wenn FUSSBALL.DE keine ID liefert, erzeugen wir eine.
-        if not match_id:
-            match_id = (
-                f"{date.isoformat()}-"
-                f"{home}-{away}"
-            )
+        competition = find_value(
+            element,
+            [
+                "competition",
+                "competitionname",
+                "competition-name",
+                "wettbewerb",
+                "wettkampf",
+            ],
+        )
 
         matches.append(
             {
-                "id": str(match_id),
+                "id": match_id or (
+                    f"{date.isoformat()}-{home}-{away}"
+                ),
                 "date": date,
                 "home": home,
                 "away": away,
@@ -402,10 +306,154 @@ def parse_matches(html_content, team_id):
     return matches
 
 
+def extract_matches_from_html(content, team_id):
+    """
+    Fallback für HTML-Antworten.
+
+    Die bekannte FUSSBALL.DE-Struktur verwendet:
+        tr.row-competition
+        danach eine Tabellenzeile mit den Mannschaften.
+    """
+
+    from bs4 import BeautifulSoup
+
+    soup = BeautifulSoup(
+        content,
+        "html.parser",
+    )
+
+    matches = []
+
+    rows = soup.select(
+        "div.club-matchplan-table tr.row-competition"
+    )
+
+    for row in rows:
+
+        # Datum/Uhrzeit
+        date_cell = row.select_one(
+            "td.column-date"
+        )
+
+        if not date_cell:
+            continue
+
+        date_text = clean_text(
+            date_cell.get_text(" ", strip=True)
+        )
+
+        date = None
+
+        # Typisches Format:
+        # 30.08.2026 - 13:00
+        match = re.search(
+            r"(\d{2}\.\d{2}\.\d{4})"
+            r"(?:\s*-\s*(\d{2}:\d{2}))?",
+            date_text,
+        )
+
+        if match:
+
+            date_string = match.group(1)
+
+            if match.group(2):
+                date_string += (
+                    " " + match.group(2)
+                )
+
+                date = datetime.strptime(
+                    date_string,
+                    "%d.%m.%Y %H:%M",
+                )
+            else:
+                date = datetime.strptime(
+                    date_string,
+                    "%d.%m.%Y",
+                )
+
+        if not date:
+            continue
+
+        # Laut dokumentierter Struktur liegen die
+        # Mannschaften in der folgenden Tabellenzeile.
+        team_row = row.find_next_sibling("tr")
+
+        if not team_row:
+            continue
+
+        clubs = team_row.select(
+            "td.colum-club div.club-name"
+        )
+
+        if len(clubs) < 2:
+            clubs = team_row.select(
+                "div.club-name"
+            )
+
+        if len(clubs) < 2:
+            continue
+
+        home = clean_text(
+            clubs[0].get_text(" ", strip=True)
+        )
+
+        away = clean_text(
+            clubs[1].get_text(" ", strip=True)
+        )
+
+        if not home or not away:
+            continue
+
+        # Spiel-ID
+        match_id = None
+
+        for link in team_row.find_all(
+            "a",
+            href=True,
+        ):
+
+            numbers = re.findall(
+                r"\d{7,}",
+                link["href"],
+            )
+
+            if numbers:
+                match_id = numbers[-1]
+                break
+
+        # Spielort
+        venue = ""
+
+        venue_element = team_row.select_one(
+            ".club-matchplan-venue"
+        )
+
+        if venue_element:
+            venue = clean_text(
+                venue_element.get_text(
+                    " ",
+                    strip=True,
+                )
+            )
+
+        matches.append(
+            {
+                "id": match_id or (
+                    f"{date.isoformat()}-{home}-{away}"
+                ),
+                "date": date,
+                "home": home,
+                "away": away,
+                "venue": venue,
+                "competition": "",
+                "team_id": team_id,
+            }
+        )
+
+    return matches
+
+
 def fetch_team(team_id):
-    """
-    Ruft den kompletten Saison-Spielplan einer Mannschaft ab.
-    """
 
     url = BASE_URL.format(
         start=START_DATE,
@@ -413,55 +461,100 @@ def fetch_team(team_id):
         team_id=team_id,
     )
 
-    print(f"🌐 Lade Spielplan: {team_id}")
+    print()
+    print("🌐 Lade:")
+    print(url)
 
     response = requests.get(
         url,
         headers=HEADERS,
-        timeout=30,
+        timeout=60,
+    )
+
+    print(
+        f"HTTP-Status: {response.status_code}"
+    )
+
+    print(
+        f"Antwortgröße: {len(response.content)} Bytes"
     )
 
     response.raise_for_status()
 
-    if not response.text.strip():
+    if not response.content:
         raise RuntimeError(
             "FUSSBALL.DE hat eine leere Antwort geliefert."
         )
 
-    matches = parse_matches(
-        response.text,
+    content_type = response.headers.get(
+        "Content-Type",
+        "",
+    )
+
+    print(
+        f"Content-Type: {content_type}"
+    )
+
+    # Zuerst XML versuchen
+    matches = extract_matches_from_xml(
+        response.content,
         team_id,
     )
 
-    if not matches:
-        raise RuntimeError(
-            "Es wurden keine Spiele gefunden. "
-            "Möglicherweise hat FUSSBALL.DE seine HTML-Struktur geändert "
-            "oder liefert momentan keine Daten."
+    if matches:
+        print(
+            f"✅ XML-Parser: {len(matches)} Spiele"
         )
+        return matches
 
-    return matches
+    # Danach HTML versuchen
+    matches = extract_matches_from_html(
+        response.content,
+        team_id,
+    )
+
+    if matches:
+        print(
+            f"✅ HTML-Parser: {len(matches)} Spiele"
+        )
+        return matches
+
+    # Sehr wichtig:
+    # Wenn FUSSBALL.DE aktuell eine Fehlerseite liefert,
+    # zeigen wir einen Ausschnitt davon.
+    preview = response.text[:1000]
+
+    print()
+    print("===== ANTWORT VON FUSSBALL.DE =====")
+    print(preview)
+    print("===================================")
+
+    raise RuntimeError(
+        "FUSSBALL.DE hat zwar eine Antwort geliefert, "
+        "aber darin wurden keine Spiele gefunden."
+    )
 
 
 def deduplicate_matches(matches):
-    """
-    Entfernt doppelte Spiele.
-    """
 
     unique = {}
 
     for match in matches:
         unique[match["id"]] = match
 
-    return list(unique.values())
+    return sorted(
+        unique.values(),
+        key=lambda x: x["date"],
+    )
 
 
 def create_ics(team_name, matches):
-    """
-    Erstellt eine vollständige iCalendar-Datei.
-    """
 
-    now = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    now = datetime.now(
+        ZoneInfo("UTC")
+    ).strftime(
+        "%Y%m%dT%H%M%SZ"
+    )
 
     lines = [
         "BEGIN:VCALENDAR",
@@ -473,15 +566,13 @@ def create_ics(team_name, matches):
         "X-WR-TIMEZONE:Europe/Berlin",
     ]
 
-    for match in sorted(
-        matches,
-        key=lambda x: x["date"],
-    ):
+    for match in matches:
+
         date = match["date"]
 
-        # Deutschland: Kalendertermine werden mit Zeitzone
-        # Europe/Berlin gespeichert.
-        dtstart = date.strftime("%Y%m%dT%H%M%S")
+        dtstart = date.strftime(
+            "%Y%m%dT%H%M%S"
+        )
 
         uid = (
             f"fussball-de-{match['id']}"
@@ -489,45 +580,52 @@ def create_ics(team_name, matches):
         )
 
         summary = (
-            f"{match['home']} - {match['away']}"
+            f"{match['home']} - "
+            f"{match['away']}"
         )
 
-        description_parts = []
+        description = (
+            f"Quelle: FUSSBALL.DE"
+        )
 
         if match["competition"]:
-            description_parts.append(
-                f"Wettbewerb: {match['competition']}"
+            description = (
+                f"Wettbewerb: "
+                f"{match['competition']}\\n"
+                f"Quelle: FUSSBALL.DE"
             )
-
-        description_parts.append(
-            "Quelle: FUSSBALL.DE"
-        )
-
-        description = "\\n".join(
-            description_parts
-        )
 
         lines.extend(
             [
                 "BEGIN:VEVENT",
                 f"UID:{ical_escape(uid)}",
                 f"DTSTAMP:{now}",
-                f"DTSTART;TZID=Europe/Berlin:{dtstart}",
+                (
+                    "DTSTART;TZID=Europe/Berlin:"
+                    f"{dtstart}"
+                ),
                 f"SUMMARY:{ical_escape(summary)}",
-                f"DESCRIPTION:{ical_escape(description)}",
+                (
+                    "DESCRIPTION:"
+                    f"{ical_escape(description)}"
+                ),
             ]
         )
 
         if match["venue"]:
             lines.append(
-                f"LOCATION:{ical_escape(match['venue'])}"
+                "LOCATION:"
+                f"{ical_escape(match['venue'])}"
             )
 
-        lines.append("END:VEVENT")
+        lines.append(
+            "END:VEVENT"
+        )
 
-    lines.append("END:VCALENDAR")
+    lines.append(
+        "END:VCALENDAR"
+    )
 
-    # RFC-konforme Zeilenumbrüche
     output = []
 
     for line in lines:
@@ -535,29 +633,54 @@ def create_ics(team_name, matches):
             fold_ical_line(line)
         )
 
-    return "\r\n".join(output) + "\r\n"
+    return (
+        "\r\n".join(output)
+        + "\r\n"
+    )
 
-
-# ============================================================
-# HAUPTPROGRAMM
-# ============================================================
 
 def main():
-    print("========================================")
-    print("Kickers 1916 – Spielplan-Kalender")
-    print("========================================")
+
+    print(
+        "========================================"
+    )
+    print(
+        "Kickers 1916 – Spielplan-Kalender"
+    )
+    print(
+        "========================================"
+    )
 
     for key, team in TEAMS.items():
+
         print()
-        print(f"⚽ {team['name']}")
+        print(
+            f"⚽ {team['name']}"
+        )
 
-        matches = fetch_team(team["id"])
+        matches = fetch_team(
+            team["id"]
+        )
 
-        matches = deduplicate_matches(matches)
+        matches = deduplicate_matches(
+            matches
+        )
 
         print(
-            f"   {len(matches)} Spiele gefunden."
+            f"📅 {len(matches)} Spiele gefunden."
         )
+
+        for match in matches:
+            print(
+                "   ",
+                match["date"].strftime(
+                    "%d.%m.%Y %H:%M"
+                ),
+                "|",
+                match["home"],
+                "-",
+                match["away"],
+            )
 
         ics_content = create_ics(
             team["name"],
@@ -575,11 +698,13 @@ def main():
         )
 
         print(
-            f"   ✅ gespeichert: {output_file}"
+            f"✅ {output_file} erstellt."
         )
 
     print()
-    print("✅ Beide Kalender wurden erfolgreich erstellt.")
+    print(
+        "🎉 Beide Kalender wurden erstellt."
+    )
 
 
 if __name__ == "__main__":
