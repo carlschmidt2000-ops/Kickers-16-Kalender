@@ -2,7 +2,7 @@ import html
 import re
 import requests
 from bs4 import BeautifulSoup
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -574,11 +574,17 @@ def create_ics(team_name, matches):
         "X-WR-TIMEZONE:Europe/Berlin",
     ]
 
-    for match in matches:
+        for match in matches:
 
         date = match["date"]
 
         dtstart = date.strftime(
+            "%Y%m%dT%H%M%S"
+        )
+
+        dtend = (
+            date + timedelta(hours=2)
+        ).strftime(
             "%Y%m%dT%H%M%S"
         )
 
@@ -610,6 +616,10 @@ def create_ics(team_name, matches):
                 (
                     "DTSTART;TZID=Europe/Berlin:"
                     f"{dtstart}"
+                ),
+                (
+                    "DTEND;TZID=Europe/Berlin:"
+                    f"{dtend}"
                 ),
                 f"SUMMARY:{ical_escape(summary)}",
                 (
@@ -645,7 +655,6 @@ def create_ics(team_name, matches):
         "\r\n".join(output)
         + "\r\n"
     )
-
 
 def main():
 
