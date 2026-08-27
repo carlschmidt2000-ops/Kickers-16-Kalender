@@ -374,9 +374,14 @@ def extract_matches(html_content, team_id):
         # SPIELORT
         # ==================================================
 
+                # ==================================================
+        # SPIELORT / ADRESSE
+        # ==================================================
+
         venue = ""
 
-        # Zuerst bekannte Selektoren probieren
+        # Spielort aus den verschiedenen möglichen
+        # FUSSBALL.DE-Elementen auslesen
         for selector in [
             ".column-venue",
             ".column-location",
@@ -386,12 +391,9 @@ def extract_matches(html_content, team_id):
             ".club-name + .venue",
         ]:
 
-            element = game_row.select_one(
-                selector
-            )
+            element = game_row.select_one(selector)
 
             if element:
-
                 venue = clean_text(
                     element.get_text(
                         " ",
